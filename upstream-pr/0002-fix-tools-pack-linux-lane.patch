@@ -1,0 +1,70 @@
+diff --git a/tools/pack/src/linux.ts b/tools/pack/src/linux.ts
+index e9342ce..1f23cdf 100644
+--- a/tools/pack/src/linux.ts
++++ b/tools/pack/src/linux.ts
+@@ -460,7 +460,13 @@ async function runProductionInstall(appRoot: string): Promise<void> {
+   const { command, args } = resolveProductionInstallCommand(process.env);
+   await execFileAsync(command, args, {
+     cwd: appRoot,
+-    env: process.env,
++    // The assembled app lives outside the workspace, so the workspace's
++    // `ignoredBuiltDependencies: [onnxruntime-node]` does not apply here and
++    // the package's install hook runs. On Linux that hook downloads the CUDA
++    // EP binaries, but the GPU asset for the pinned onnxruntime version does
++    // not exist on GitHub (404) and the CPU runtime ships in the npm package.
++    // Skip the CUDA download to match the workspace's CPU-only intent.
++    env: { ...process.env, ONNXRUNTIME_NODE_INSTALL_CUDA: "skip" },
+   });
+ }
+ 
+@@ -536,6 +542,15 @@ async function writeAssembledApp(
+     dependencies[tarball.packageName] = `file:${join(paths.tarballsRoot, tarball.fileName)}`;
+   }
+ 
++  // The packed tarballs keep their internal deps as plain version ranges
++  // (pnpm pack rewrites `workspace:*` to the concrete version). Neither npm
++  // nor pnpm dedupes a transitive `@open-design/<pkg>@<version>` requirement
++  // onto a root `file:` tarball dependency, so the production install tries
++  // to fetch @open-design/* from the npm registry and 404s (the packages are
++  // private to this repo). Pin every internal package to its local tarball
++  // via overrides so all resolution paths land on the file: artifacts.
++  const overrides = { ...dependencies };
++
+   const version = await readPackagedVersion(config);
+   const packageVersion = electronBuilderVersionForAppVersion(version);
+   const packageJson = {
+@@ -543,7 +558,17 @@ async function writeAssembledApp(
+     version: packageVersion,
+     private: true,
+     main: "main.cjs",
++    // electron-builder's package-manager detection reads this field before
++    // lock files and environment. The assembled app is installed with npm
++    // (flat node_modules); declaring it keeps the node-module collector on the
++    // npm traversal path. Without it, the npm_execpath env var (set for the
++    // containerized bootstrap) misleads detection into pnpm, whose collector
++    // expects a .pnpm virtual-store layout and drops hoisted transitive deps
++    // (e.g. setimmediate) from the AppImage.
++    packageManager: "npm@11.11.0",
+     dependencies,
++    overrides,
++    pnpm: { overrides },
+     description: "Local-first design product: detects your installed code-agent CLI, runs design skills + design systems, streams artifacts into a sandboxed preview.",
+     author: "Open Design Team",
+     repository: {
+@@ -656,6 +681,16 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
+ 
+ // --- Step 6: runElectronBuilderLinux + findBuiltAppImage helpers ---
+ 
++// Do NOT add an Electron-ABI `@electron/rebuild` step here, even though the
++// mac/win lanes have one. Those lanes run their daemon as Electron-as-node and
++// therefore need native modules built for Electron's ABI. The Linux packaged
++// daemon runs on the bundled plain Node instead (`nodeCommandRelative` in
++// `open-design-config.json`), and the production `npm install` above has
++// already compiled better-sqlite3 / node-pty via node-gyp against exactly that
++// Node. Rebuilding for Electron leaves the daemon with a NODE_MODULE_VERSION
++// mismatch, which surfaces at runtime as "was compiled against a different
++// Node.js version" rather than at packaging time.
++
+ async function runElectronBuilderLinux(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
+   await rm(paths.appBuilderOutputRoot, { force: true, recursive: true });
+   const args = [

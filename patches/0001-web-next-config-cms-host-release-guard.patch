@@ -1,0 +1,30 @@
+diff --git a/apps/web/next.config.ts b/apps/web/next.config.ts
+index 9cfc496..bf489af 100644
+--- a/apps/web/next.config.ts
++++ b/apps/web/next.config.ts
+@@ -1,3 +1,11 @@
++/*
++ * MODIFIED FILE — OpenDesign Linux unofficial build.
++ * Modified relative to upstream tag open-design-v0.27.2 (commit d9691d7):
++ * the NEXT_PUBLIC_CMS_HOST_RELEASE guard now probes a workspace-only input
++ * path instead of a file that also ships inside the web package tarball.
++ * See release/patches/0001-*.patch. Licensed under Apache-2.0 (see LICENSE).
++ */
++
+ import type { NextConfig } from 'next';
+ import { existsSync, realpathSync, readFileSync } from 'node:fs';
+ import { createHash } from 'node:crypto';
+@@ -199,7 +207,12 @@ const nextConfig: NextConfig = {
+   env: {
+     // Embedded in the client at build time. Packaged servers use the already
+     // compiled client and need not retain source files to load this config.
+-    NEXT_PUBLIC_CMS_HOST_RELEASE: existsSync(resolve(WEB_ROOT, 'src/components/touchpoint-component.ts'))
++    // [MODIFIED — OpenDesign Linux build] Guard on the first fingerprint input
++    // (a workspace-only path) rather than a file that ships inside the web
++    // tarball: the package's `files` list includes `src`, so a `WEB_ROOT`-
++    // relative guard is true in the packaged context too and the fingerprint
++    // read of `apps/web/...` sources then ENOENTs.
++    NEXT_PUBLIC_CMS_HOST_RELEASE: existsSync(resolve(WORKSPACE_ROOT, CMS_HOST_RELEASE_INPUTS[0]))
+       ? cmsHostReleaseFingerprint((file) => readFileSync(resolve(WORKSPACE_ROOT, file)))
+       : undefined,
+   },

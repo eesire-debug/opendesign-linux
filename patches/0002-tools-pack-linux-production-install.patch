@@ -1,0 +1,138 @@
+diff --git a/tools/pack/src/linux.ts b/tools/pack/src/linux.ts
+index e9342ce..b2fbe52 100644
+--- a/tools/pack/src/linux.ts
++++ b/tools/pack/src/linux.ts
+@@ -1,3 +1,13 @@
++/*
++ * MODIFIED FILE — OpenDesign Linux unofficial build.
++ * Modified relative to upstream tag open-design-v0.27.2 (commit d9691d7).
++ * Three changes, each marked inline with `[MODIFIED — OpenDesign Linux build]`:
++ *   1. runProductionInstall() injects ONNXRUNTIME_NODE_INSTALL_CUDA=skip;
++ *   2. the assembled app's package.json gains `overrides` / `pnpm.overrides`;
++ *   3. the assembled app's package.json declares `packageManager: npm@…`.
++ * See release/patches/0002-*.patch. Licensed under Apache-2.0 (see LICENSE).
++ */
++
+ import { execFile, spawn } from "node:child_process";
+ import { access, chmod, cp, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+ import { homedir } from "node:os";
+@@ -42,6 +52,10 @@ const execFileAsync = promisify(execFile);
+ 
+ const PRODUCT_NAME = "Open Design";
+ const APP_IMAGE_PRODUCT_NAME = "Open-Design";
++// Desktop-entry display name. Apache-2.0 §6 grants no trademark rights, so the
++// launcher entry does not present itself as the official "Open Design" product;
++// it uses the one-word "OpenDesign" form plus an explicit unofficial marker.
++const DESKTOP_DISPLAY_NAME = "OpenDesign Linux (unofficial build)";
+ const DESKTOP_LOG_ECHO_ENV = "OD_DESKTOP_LOG_ECHO";
+ // The containerized build sets this to the standalone pnpm binary fetched by
+ // buildDockerArgs; runProductionInstall reads it to avoid invoking `npm` inside
+@@ -460,7 +474,14 @@ async function runProductionInstall(appRoot: string): Promise<void> {
+   const { command, args } = resolveProductionInstallCommand(process.env);
+   await execFileAsync(command, args, {
+     cwd: appRoot,
+-    env: process.env,
++    // The assembled app lives outside the workspace, so the workspace's
++    // `ignoredBuiltDependencies: [onnxruntime-node]` does not apply here and
++    // the package's install hook runs. On Linux that hook downloads the CUDA
++    // EP binaries, but the GPU asset for the pinned onnxruntime version does
++    // not exist on GitHub (404) and the CPU runtime ships in the npm package.
++    // Skip the CUDA download to match the workspace's CPU-only intent.
++    // [MODIFIED — OpenDesign Linux build] see release/patches/0002-*.patch.
++    env: { ...process.env, ONNXRUNTIME_NODE_INSTALL_CUDA: "skip" },
+   });
+ }
+ 
+@@ -515,6 +536,13 @@ async function copyResourceTree(config: ToolPackConfig, paths: LinuxPaths): Prom
+     requireBundled: config.requireVelaCli,
+     resourceRoot: paths.resourceRoot,
+   });
++  // A clean, redistributable Linux artifact must not carry the UNLICENSED Vela
++  // payload (the vela CLI plus its bundled OpenCode companion). copyOptionalVelaCliBinary
++  // copies both whenever the optional dependency is installed, so strip them here,
++  // before electron-builder packs the resource root into the AppImage. A user with
++  // a legitimate Vela license can drop the binary back at resources/open-design/bin/vela.
++  await rm(join(paths.resourceRoot, "bin", "vela"), { force: true });
++  await rm(join(paths.resourceRoot, "bin", "libexec"), { force: true, recursive: true });
+ }
+ 
+ // --- Step 4: writeAssembledApp helper ---
+@@ -536,6 +564,16 @@ async function writeAssembledApp(
+     dependencies[tarball.packageName] = `file:${join(paths.tarballsRoot, tarball.fileName)}`;
+   }
+ 
++  // The packed tarballs keep their internal deps as plain version ranges
++  // (pnpm pack rewrites `workspace:*` to the concrete version). Neither npm
++  // nor pnpm dedupes a transitive `@open-design/<pkg>@<version>` requirement
++  // onto a root `file:` tarball dependency, so the production install tries
++  // to fetch @open-design/* from the npm registry and 404s (the packages are
++  // private to this repo). Pin every internal package to its local tarball
++  // via overrides so all resolution paths land on the file: artifacts.
++  // [MODIFIED — OpenDesign Linux build] see release/patches/0002-*.patch.
++  const overrides = { ...dependencies };
++
+   const version = await readPackagedVersion(config);
+   const packageVersion = electronBuilderVersionForAppVersion(version);
+   const packageJson = {
+@@ -543,7 +581,18 @@ async function writeAssembledApp(
+     version: packageVersion,
+     private: true,
+     main: "main.cjs",
++    // electron-builder's package-manager detection reads this field before
++    // lock files and environment. The assembled app is installed with npm
++    // (flat node_modules); declaring it keeps the node-module collector on the
++    // npm traversal path. Without it, the npm_execpath env var (set for the
++    // containerized bootstrap) misleads detection into pnpm, whose collector
++    // expects a .pnpm virtual-store layout and drops hoisted transitive deps
++    // (e.g. setimmediate) from the AppImage.
++    // [MODIFIED — OpenDesign Linux build] see release/patches/0002-*.patch.
++    packageManager: "npm@11.11.0",
+     dependencies,
++    overrides,
++    pnpm: { overrides },
+     description: "Local-first design product: detects your installed code-agent CLI, runs design skills + design systems, streams artifacts into a sandboxed preview.",
+     author: "Open Design Team",
+     repository: {
+@@ -630,7 +679,18 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
+             },
+           ],
+         }),
+-    files: ["**/*", "!**/node_modules/.bin", "!**/node_modules/electron{,/**/*}"],
++    files: [
++      "**/*",
++      "!**/node_modules/.bin",
++      "!**/node_modules/electron{,/**/*}",
++      // @ffmpeg-installer/ffmpeg ships a stray `.env` (an npm publish token)
++      // plus editor `~` backup files from its author's working directory.
++      // Neither is read at runtime (the package's `main` is index.js); strip
++      // both so a redistributed artifact carries no leaked credential and no
++      // working-dir clutter.
++      "!**/node_modules/@ffmpeg-installer/ffmpeg/.env",
++      "!**/node_modules/@ffmpeg-installer/ffmpeg/**/*~",
++    ],
+     icon: linuxResources.icon,
+     linux: {
+       target,
+@@ -647,7 +707,7 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
+     },
+     nodeGypRebuild: false,
+     npmRebuild: false,
+-    productName: PRODUCT_NAME,
++    productName: DESKTOP_DISPLAY_NAME,
+   };
+ 
+   await mkdir(dirname(paths.appBuilderConfigPath), { recursive: true });
+@@ -656,6 +716,13 @@ async function writeLinuxBuilderConfig(config: ToolPackConfig, paths: LinuxPaths
+ 
+ // --- Step 6: runElectronBuilderLinux + findBuiltAppImage helpers ---
+ 
++// Unlike the mac/win lanes (whose daemons run as Electron-as-node and therefore
++// need an Electron-ABI native rebuild), the Linux packaged daemon runs on the
++// bundled plain Node (see nodeCommandRelative in the packaged config). The
++// production `npm install` already compiles better-sqlite3 (and node-pty)
++// against that same Node via node-gyp, so no Electron-ABI rebuild is wanted
++// here — doing one would leave the daemon with a NODE_MODULE_VERSION mismatch.
++
+ async function runElectronBuilderLinux(config: ToolPackConfig, paths: LinuxPaths): Promise<void> {
+   await rm(paths.appBuilderOutputRoot, { force: true, recursive: true });
+   const args = [

@@ -1,0 +1,18 @@
+diff --git a/apps/web/next.config.ts b/apps/web/next.config.ts
+index 9cfc496..3e026f8 100644
+--- a/apps/web/next.config.ts
++++ b/apps/web/next.config.ts
+@@ -199,7 +199,12 @@ const nextConfig: NextConfig = {
+   env: {
+     // Embedded in the client at build time. Packaged servers use the already
+     // compiled client and need not retain source files to load this config.
+-    NEXT_PUBLIC_CMS_HOST_RELEASE: existsSync(resolve(WEB_ROOT, 'src/components/touchpoint-component.ts'))
++    // Probe a workspace-only input rather than a file that also ships inside
++    // the web package tarball. The package's `files` list includes `src`, so a
++    // `WEB_ROOT`-relative guard stays true in the packaged context too; the
++    // fingerprint then reads `apps/web/...` sources that are absent there and
++    // `readFileSync` throws ENOENT, taking the web sidecar down with it.
++    NEXT_PUBLIC_CMS_HOST_RELEASE: existsSync(resolve(WORKSPACE_ROOT, CMS_HOST_RELEASE_INPUTS[0]))
+       ? cmsHostReleaseFingerprint((file) => readFileSync(resolve(WORKSPACE_ROOT, file)))
+       : undefined,
+   },

@@ -1,0 +1,3 @@
+# build artifacts / large binaries — attached to the GitHub Release instead
+OpenDesign-Linux-*.AppImage
+SHA256SUMS.txt
